@@ -1,0 +1,162 @@
+/*
+    Assignment 4 Submission
+    Name: Pranav Jha
+    Roll number: 22CS30061 
+*/
+
+TABLE
++------+------------+---------------+------+
+| p    | messages   | transmissions | avg  |
++------+------------+---------------+------+
+| 0.05 |    200     |     259       | 1.28 |
++------+------------+---------------+------+
+| 0.10 |    200     |     293       | 1.46 |
++------+------------+---------------+------+
+| 0.15 |    200     |     359       | 1.79 |
++------+------------+---------------+------+
+| 0.20 |    200     |     361       | 1.81 |
++------+------------+---------------+------+
+| 0.25 |    200     |     474       | 2.36 |
++------+------------+---------------+------+
+| 0.30 |    200     |     543       | 2.71 |
++------+------------+---------------+------+
+| 0.35 |    200     |     594       | 2.97 |
++------+------------+---------------+------+
+| 0.40 |    200     |     617       | 3.09 |
++------+------------+---------------+------+
+| 0.45 |    200     |     666       | 3.33 |
++------+------------+---------------+------+
+| 0.50 |    200     |     714       | 3.57 |
++------+------------+---------------+------+
+
+FUNCTIONS
+
+1. k_socket(int domain, int type, int protocol)
+   - Creates a new KTP socket.
+   - Ensures the socket type is SOCK_KTP.
+   - Finds a free slot in the 'sockets' shared array and initializes the kernel socket 
+     (signals semaphores in initksocket to create it).
+   - Returns the KTP socket descriptor on success and -1 on failure.
+
+2. k_bind(int k_sockfd, struct sockaddr_in *destAddr, socklen_t destLen, struct sockaddr_in *srcAddr, socklen_t srcLen)
+   - Binds a kernel-level socket to a specified source and destination address (through initksocket).
+   - Validates the socket state before binding.
+   - Returns 0 on success or -1 on failure.
+
+3. k_sendto(int k_sockfd, const char *buf, int len, int flags, struct sockaddr_in *destAddr, socklen_t destLen)
+   - Sends a message to a specified destination address.
+   - Checks if the socket is in a READY state and if the destination address matches the bound address.
+   - Copies data into the send buffer of shared memory if there is space available.
+   - Returns the number of bytes sent or -1 if an error occurs.
+
+4. k_recvfrom(int k_sockfd, char *buf, int len, int flags, struct sockaddr_in *srcAddr, socklen_t *srcLen)
+   - Receives a message from a socket.
+   - Ensures the socket is in the READY state.
+   - Reads data from the receive buffer of shared memory if available.
+   - Returns the number of bytes received or -1 if an error occurs or no data was available.
+
+5. k_close(int k_sockfd)
+   - Closes a kernel-level socket (through initksocket).
+   - Ensures all pending messages are sent before closing (blocking).
+   - Changes the socket state to FREE.
+   - Returns 0 on success or -1 on failure.
+
+6. k_perror(const char *s)
+   - Prints an error message corresponding to the global error ('eno').
+   - Prints descriptive messages for each user error code.
+   - If eno is not set, it does nothing.
+   - Returns 1 if an error occurred, otherwise 0.
+
+STRUCTURES
+
+1. struct packet
+   - Represents a packet that will be sent over the network.
+
+   Fields:
+      - int seqNo: Stores the sequence number of the packet.
+      - int isAck: Represents if the packet is an ACK or data packet.
+      - int dataLen: Stores the length of the data in the packet, or the window size for ACK packets.
+      - char data[DATASIZE]: Stores the data in the packet.
+
+2. struct window
+   - Represents a window that will be used for sending and receiving packets.
+
+   Fields:
+      - int size: Stores the maximum size of the window.
+      - int left, right: Represents the left and right pointers of the window.
+      - int ack[MAXSEQNO]: Stores the ACKs received by the window.
+
+3. struct buffer
+   - Represents a buffer that will be used for sending and receiving packets.
+
+   Fields:
+      - char data[SENDBUFSIZE][DATASIZE]: Stores the data in the buffer.
+      - int dataLen[SENDBUFSIZE]: Stores the length of the data in the buffer.
+      - int spaceLeft: Stores the space left in the buffer.
+      - int notInWindow: Stores the number of packets not in the window but in the buffer.
+      - int left: Stores the left pointer of the buffer.
+      - int base: Stores the base buffer, where the user will write or read from.
+
+4. struct ktp_socket
+   - Represents a KTP socket, that will handle the communication between two processes.
+
+   Fields:
+      - int pid: Stores the process ID of the process that created this socket.
+      - int sockfd: Holds the UDP socket descriptor associated with this KTP socket.
+      - int sockState: Represents the current state of the socket.
+        - FREE: The socket is not in use.
+        - TO_CREATE: The socket is in the process of being created.
+        - CREATED: The socket has been created and is ready to be bound.
+        - TO_BIND: The socket is in the process of being bound.
+        - READY: The socket is bound and ready to send and receive messages.
+        - TO_CLOSE: The socket is in the process of being closed.
+      - struct sockaddr_in srcAddr: Stores the source address of the socket, from where the message will come.
+      - socklen_t srcLen: Stores the length of the source address.
+      - struct sockaddr_in destAddr: Stores the destination address of the socket, where the message will be sent.
+      - socklen_t destLen: Stores the length of the destination address.
+      - window swnd: Represents the send window of the socket.
+      - buffer sendBuffer: Represents the send buffer of the socket.
+      - window rwnd: Represents the receive window of the socket.
+      - buffer recvBuffer: Represents the receive buffer of the socket.
+      - int noSpace: If the receive buffer is full, this flag is set.
+      - int eno: Stores the last error number encountered by the socket.
+      - int transmissions: Tracks the total number of transmissions made by the socket.
+      - int messages: Tracks the total number of messages processed by the socket.
+
+PROTOCOL
+
+End-to-End Reliable Flow Control over UDP sockets using a customized KTP socket.
+
+1. recvThread
+   - Receives packets from the UDP socket and processes them.
+   - First, it waits on all the READY sockets over a select call.
+   - If the noSpace flag is set and rwnd size is not zero:
+     - It sends an ACK with the updated window size.
+   - If the packet is an ACK:
+     - If it's a duplicate ACK or out of send window, it is ignored.
+     - Else, it processes the ACK and updates the send window.
+     - It then updates the swnd and sendBuffer according to the rwnd in ACK.
+   - If the packet is a data packet:
+     - If rwnd is 0, the packet is dropped.
+     - If the packet is in the receive window, it is processed:
+       - If the packet was not received before, it is added to the recvBuffer.
+       - If the packet was received before, it is ignored.
+     - It then sends an ACK with the updated window size.
+
+2. sendThread
+   - Sends packets from the sendBuffer to the UDP socket.
+   - Waits for T / 2 time.
+   - If timeout (T) occurs, it resends the packets in the send window.
+   - If new data is available in the sendBuffer, it sends the data.
+
+3. garbageThread
+   - Cleans up the sockets whose processes have been completed.
+   - It waits for T / 2 time.
+   - If the socket is not FREE and its process is completed, it closes the socket.
+
+4. sockBindCloseThread
+   - Handles the bind and close operations on the sockets.
+   - Only starts when its semaphore is signaled.
+   - If the socket is in the TO_CREATE state, it creates the socket.
+   - If the socket is in the TO_BIND state, it binds the socket.
+   - If the socket is in the TO_CLOSE state, it closes the socket.
